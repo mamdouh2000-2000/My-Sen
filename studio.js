@@ -321,7 +321,7 @@
     root.innerHTML = `
       <div class="studio-detail-header">
         <div><div class="eyebrow">PROJECT CONTROL ROOM / ${esc(p.teamNumber || 'TEAM: UNKNOWN')}</div><h2>${esc(p.name || 'مشروع بدون اسم')}</h2><p>${esc(p.description || 'أضف وصف المشروع والنتيجة المستهدفة.')}</p></div>
-        <div class="studio-detail-actions"><select id="studio-status" class="input-dark" aria-label="حالة المشروع">${[['planning','قيد التخطيط'],['active','جارٍ التنفيذ'],['review','مراجعة واختبار'],['delivered','تم التسليم'],['paused','متوقف مؤقتًا']].map(([v,l])=>`<option value="${v}" ${p.status===v?'selected':''}>${l}</option>`).join('')}</select><button class="studio-btn primary" type="button" onclick="saveStudioDetails()"><i class="fas fa-save"></i> حفظ التعديلات</button></div>
+        <div class="studio-detail-actions"><select id="studio-status" class="input-dark" aria-label="حالة المشروع">${[['planning','قيد التخطيط'],['active','جارٍ التنفيذ'],['review','مراجعة واختبار'],['delivered','تم التسليم'],['paused','متوقف مؤقتًا']].map(([v,l])=>`<option value="${v}" ${p.status===v?'selected':''}>${l}</option>`).join('')}</select><button class="studio-btn" type="button" onclick="duplicateStudioProject()"><i class="fas fa-copy"></i> نسخ المشروع</button><button class="studio-btn primary" type="button" onclick="saveStudioDetails()"><i class="fas fa-save"></i> حفظ التعديلات</button></div>
       </div>
       <div class="studio-progress-line"><span style="width:${timelinePct}%"></span></div><div class="studio-progress-caption"><span>تقدم التنفيذ</span><strong>${timelinePct}% • ${s.stepsDone} من ${s.stepsTotal} خطوات</strong></div>
       <form id="studio-edit-form" class="studio-section-card" onsubmit="return saveStudioDetails(event)">
@@ -423,6 +423,100 @@
 
   function selectStudioProject(id) { activeProjectId = id; renderStudio(); }
   function getActive() { return projects.find(p => p.id === activeProjectId) || null; }
+
+  // Duplicate the active project as an editable template. Project content and material
+  // specifications are copied, but financial transactions and dated/team-specific links
+  // are intentionally reset so the new project cannot inherit another client's account.
+  function duplicateStudioProject() {
+    const source = getActive();
+    if (!source) {
+      studioToast('اختار مشروعًا أولًا لنسخه.', 'info');
+      return false;
+    }
+
+    const proposedName = `نسخة - ${source.name || 'مشروع بدون اسم'}`;
+    const enteredName = prompt('اسم المشروع الجديد (تقدر تعدّله لاحقًا):', proposedName);
+    if (enteredName === null) return false;
+    const newName = enteredName.trim();
+    if (!newName) {
+      studioToast('اكتب اسمًا للنسخة الجديدة.', 'error');
+      return false;
+    }
+
+    const confirmed = confirm(
+      'سيتم نسخ بيانات المشروع والمواد والكميات والأسعار والمراحل والمهام وأعضاء الفريق والمرفقات. ' +
+      'ستبدأ النسخة بدون دفعات/مصروفات قديمة أو محادثة AI أو مواعيد اجتماعات وروابط فريق قديمة، ' +
+      'وستعود حالات المراحل والمهام إلى البداية. متابعة؟'
+    );
+    if (!confirmed) return false;
+
+    let copy;
+    try {
+      copy = JSON.parse(JSON.stringify(source));
+    } catch (error) {
+      studioToast('تعذر نسخ بيانات المشروع: ' + error.message, 'error');
+      return false;
+    }
+
+    const timestamp = nowISO();
+    copy.id = uid();
+    copy.name = newName;
+    copy.status = 'planning';
+    copy.createdAt = timestamp;
+    copy.updatedAt = timestamp;
+    copy.createdBy = activeUser || source.createdBy || 'Unknown';
+    copy.duplicatedFrom = source.id;
+
+    // Copy all material specifications, but make every row independent and unpurchased.
+    copy.materials = (Array.isArray(source.materials) ? source.materials : []).map(item => ({
+      ...item,
+      id: uid(),
+      status: 'planned',
+      createdAt: timestamp,
+      updatedAt: timestamp
+    }));
+
+    // Preserve the roadmap/task definitions while giving every record a new identity
+    // and resetting completion so the duplicate starts as a fresh project.
+    copy.timeline = (Array.isArray(source.timeline) ? source.timeline : []).map(step => ({
+      ...step,
+      id: uid(),
+      status: 'planned',
+      completedAt: null
+    }));
+    copy.tasks = (Array.isArray(source.tasks) ? source.tasks : []).map(task => ({
+      ...task,
+      id: uid(),
+      status: 'todo',
+      createdAt: timestamp,
+      completedAt: null
+    }));
+    copy.members = (Array.isArray(source.members) ? source.members : []).map(member => ({
+      ...member,
+      id: uid(),
+      createdAt: timestamp
+    }));
+    copy.media = (Array.isArray(source.media) ? source.media : []).map(mediaItem => ({
+      ...mediaItem,
+      id: uid(),
+      addedAt: timestamp.slice(0, 10)
+    }));
+
+    // Never carry old-client transactions, appointments, or group links into the clone.
+    copy.ledger = [];
+    copy.aiChatHistory = [];
+    copy.meetings = [];
+    copy.meetingDate = '';
+    copy.meetingLink = '';
+    copy.whatsappLink = '';
+    copy.teamMembers = copy.members.length
+      ? copy.members.map(member => member.name).filter(Boolean).join('، ')
+      : (source.teamMembers || 'Unknown');
+
+    persistProject(copy, false);
+    studioToast('تم نسخ المشروع بكل مواده وكمياتها وأسعارها. افتح بيانات النسخة وعدّل ما يلزم.', 'success');
+    return true;
+  }
 
   async function saveStudioDetails(event) {
     if (event) event.preventDefault();
@@ -715,6 +809,7 @@
   window.createStudioProject=createStudioProject;
   window.openStudioCreatePanel=openCreatePanel;
   window.selectStudioProject=selectStudioProject;
+  window.duplicateStudioProject=duplicateStudioProject;
   window.saveStudioDetails=saveStudioDetails;
   window.generateStudioTimeline=generateStudioTimeline;
   window.addStudioStep=addStudioStep;
